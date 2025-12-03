@@ -1,7 +1,10 @@
 import pygame
 import random
 import sys
-from typing import Dict, List, Optional, Tuple
+import traceback 
+from typing import Dict, List, Optional, Tuple, Any
+
+# versión con UI funcional v0.6 (Discard Modal + Fixes)
 
 # =============================================================================
 # PARTE 1: LÓGICA DEL JUEGO (NÚCLEO v0.4 ES)
@@ -91,13 +94,18 @@ class PlayerDeck:
         
         piles: List[List[str]] = []
         n = n_epidemics
-        pile_size = len(base) // n
+        pile_size = max(1, len(base) // n)
         for i in range(n):
             pile = base[i*pile_size:(i+1)*pile_size]
             pile.append("EPIDEMIA")
             random.shuffle(pile)
             piles.append(pile)
         
+        # Add leftovers
+        if n * pile_size < len(base):
+             leftover = base[n*pile_size:]
+             if piles: piles[-1].extend(leftover)
+
         self.deck: List[str] = [card for pile in piles for card in pile]
         self.discard_pile: List[str] = []
 
@@ -113,6 +121,7 @@ class Game:
     PLAYER_HAND_LIMIT = 7
 
     def __init__(self, num_players: int = 2, seed: int = 42):
+        print(f"DEBUG: Inicializando juego con semilla {seed}...")
         random.seed(seed)
 
         self.num_players = num_players
@@ -135,20 +144,26 @@ class Game:
         self.cures_discovered: Dict[str, bool] = {"Blue": False, "Yellow": False, "Black": False, "Red": False}
         self.eradicated: Dict[str, bool] = {"Blue": False, "Yellow": False, "Black": False, "Red": False}
 
+        print("DEBUG: Configurando mapa...")
         self._setup_full_map()
         city_names = [c.name for c in self.cities.values()]
+        
+        print("DEBUG: Creando mazos...")
         self.infection_deck = InfectionDeck(city_names)
         self.player_deck = PlayerDeck(city_names, seed=seed)
+        
+        print("DEBUG: Infecciones iniciales...")
         self._initial_infections()
         
         self.research_stations.append("Atlanta")
         for i in range(num_players):
             self.add_player(f"Jugador {i+1}", "Atlanta")
+        print("DEBUG: Juego inicializado correctamente.")
 
     def log_msg(self, text: str):
         print(text)
         self.log.append(text)
-        if len(self.log) > 200:
+        if len(self.log) > 500:
             self.log.pop(0)
 
     def _add_city(self, name: str, color: str):
@@ -165,7 +180,7 @@ class Game:
         blue = ["San Francisco","Chicago","Atlanta","Montreal","New York","Washington","London","Madrid","Paris","Essen","Milan","St. Petersburg"]
         yellow = ["Los Angeles","Mexico City","Miami","Bogota","Lima","Santiago","Buenos Aires","Sao Paulo","Lagos","Khartoum","Kinshasa","Johannesburg"]
         black = ["Algiers","Istanbul","Moscow","Cairo","Baghdad","Tehran","Karachi","Riyadh","Delhi","Mumbai","Chennai","Kolkata"]
-        red = ["Bangkok","Jakarta","Ho Chi Minh City","Hong Kong","Shanghai","Beijing","Seoul","Tokyo","Osaka","Taipei","Manila","Sydney"]
+        red = ["Bangkok","Jakarta","Ho Chi Minh","Hong Kong","Shanghai","Beijing","Seoul","Tokyo","Osaka","Taipei","Manila","Sydney"]
         for name in blue: self._add_city(name, "Blue")
         for name in yellow: self._add_city(name, "Yellow")
         for name in black: self._add_city(name, "Black")
@@ -207,17 +222,17 @@ class Game:
             ("Mumbai", ["Karachi", "Delhi", "Chennai"]),
             ("Chennai", ["Mumbai", "Delhi", "Kolkata", "Bangkok", "Jakarta"]),
             ("Kolkata", ["Delhi", "Chennai", "Bangkok", "Hong Kong"]),
-            ("Bangkok", ["Kolkata", "Chennai", "Jakarta", "Ho Chi Minh City", "Hong Kong"]),
-            ("Jakarta", ["Chennai", "Bangkok", "Ho Chi Minh City", "Sydney"]),
-            ("Ho Chi Minh City", ["Jakarta", "Bangkok", "Hong Kong", "Manila"]),
-            ("Hong Kong", ["Kolkata", "Bangkok", "Ho Chi Minh City", "Shanghai", "Taipei", "Manila"]),
+            ("Bangkok", ["Kolkata", "Chennai", "Jakarta", "Ho Chi Minh", "Hong Kong"]),
+            ("Jakarta", ["Chennai", "Bangkok", "Ho Chi Minh", "Sydney"]),
+            ("Ho Chi Minh", ["Jakarta", "Bangkok", "Hong Kong", "Manila"]),
+            ("Hong Kong", ["Kolkata", "Bangkok", "Ho Chi Minh", "Shanghai", "Taipei", "Manila"]),
             ("Shanghai", ["Beijing", "Seoul", "Tokyo", "Hong Kong", "Taipei"]),
             ("Beijing", ["Shanghai", "Seoul"]),
             ("Seoul", ["Beijing", "Shanghai", "Tokyo"]),
             ("Tokyo", ["Seoul", "Shanghai", "Osaka", "San Francisco"]),
             ("Osaka", ["Tokyo", "Taipei"]),
             ("Taipei", ["Osaka", "Shanghai", "Hong Kong", "Manila"]),
-            ("Manila", ["Taipei", "Hong Kong", "Ho Chi Minh City", "Sydney", "San Francisco"]),
+            ("Manila", ["Taipei", "Hong Kong", "Ho Chi Minh", "Sydney", "San Francisco"]),
             ("Sydney", ["Jakarta", "Manila", "Los Angeles"])
         ]
         for city_name, neighs in connections:
@@ -383,24 +398,35 @@ class Game:
 
         return True
 
-    def validate_turn_plan(self, player_index: int, actions: List[Tuple[str, Optional[str]]]) -> bool:
-        """
-        Simulates the full turn to check validity of chained actions.
-        Does NOT modify game state.
-        """
+    def validate_turn_plan(self, player_index: int, actions: List[Tuple[str, Any]]) -> bool:
         p = self.players[player_index]
         sim_loc = p.location
         sim_hand = p.hand[:]
         sim_stations = self.research_stations[:]
         
-        # Helper to simulate city infection lookup (read-only)
-        def get_infection_count(c_name):
-            c_key = c_name.lower()
-            return self.cities[c_key].infections if c_key in self.cities else 0
-
         for i, (act, param) in enumerate(actions, 1):
             act = act.lower()
             
+            if act == "event":
+                card_name = param.get("name")
+                kwargs = param.get("kwargs", {})
+                
+                if card_name in sim_hand: 
+                    sim_hand.remove(card_name)
+                else:
+                    return False
+                
+                if card_name == "PUENTE_AEREO":
+                    t_idx = kwargs.get('target_player_idx')
+                    dest = kwargs.get('dest_city')
+                    if t_idx == player_index and dest:
+                        sim_loc = dest
+                elif card_name == "SUBSIDIO_GUBERNAMENTAL":
+                    target = kwargs.get('target_city')
+                    if target and target not in sim_stations:
+                        sim_stations.append(target)
+                continue
+
             if act == "move":
                 try:
                     dest_obj = self._get_city(param)
@@ -416,14 +442,13 @@ class Game:
                 for c in sim_hand:
                     if c.lower() == param.lower():
                         sim_hand.remove(c)
-                        sim_loc = param # Actually move
+                        sim_loc = param 
                         found = True
                         break
                 if not found: return False
                 
             elif act == "charter_flight":
                 if not param: return False
-                # Need card of CURRENT location
                 found = False
                 for c in sim_hand:
                     if c.lower() == sim_loc.lower():
@@ -451,31 +476,18 @@ class Game:
                         break
                 if not found: return False
                 
-            elif act in ("cure", "treat"):
-                # Simplification: Allow treating even if count is 0 in sim to avoid complex state cloning
-                # Ideally check if get_infection_count(sim_loc) > 0
-                if get_infection_count(sim_loc) == 0:
-                     pass # Soft fail or strict? Strict = return False.
-                     # But managing decrements is hard without cloning cities. 
-                     # Let's assume valid if >0 at start, or if previous actions didn't cure it fully.
-                     # For now, let's keep it loose for 'treat' to avoid frustration.
+            elif act in ("cure", "treat", "share"):
                 pass
                 
             elif act == "discover_cure":
                 if sim_loc not in sim_stations: return False
-                # Count cards in sim_hand
                 colors = {"Blue": 0, "Yellow": 0, "Black": 0, "Red": 0}
                 for c in sim_hand:
                     if c.lower() in self.cities:
                         col = self.cities[c.lower()].color
                         colors[col] += 1
                 can_cure = any(k >= 5 for k in colors.values())
-                # Note: we don't know WHICH color to cure if multiple, so we don't remove cards in sim
-                # This makes validation imperfect if trying to cure 2 diseases in 1 turn (very rare)
                 if not can_cure: return False
-                
-            elif act == "share":
-                pass
                 
         return True
 
@@ -500,7 +512,8 @@ class Game:
         if is_eradicated:
             self.eradicated[color] = True
             self.log_msg(f"[ERRADICADA] ¡La enfermedad {color} ha sido erradicada del tablero!")
-
+    
+    # --- Modificado para no descartar automáticamente ---
     def _player_draw_card_to_hand(self, player: Player) -> bool:
         try:
             card = self.player_deck.draw_card()
@@ -520,10 +533,7 @@ class Game:
             self.log_msg(f"[ROBO] {player.name} robó: {card}.")
             player.hand.append(card)
         
-        while len(player.hand) > Game.PLAYER_HAND_LIMIT:
-            discarded = player.hand.pop()
-            self.player_deck.discard(discarded)
-            self.log_msg(f"  -> {player.name} descartó {discarded} (exceso).")
+        # ELIMINADO: Bucle de descarte automático. Ahora la GUI gestiona el descarte.
         return True
 
     def infection_phase(self):
@@ -548,40 +558,65 @@ class Game:
             self.infection_deck.discard(card)
             if self.game_over: return
 
-    def run_turn(self, actions: List[Tuple[str, Optional[str]]], player_index: Optional[int] = None):
-        if self.game_over: return
+    # --- Reorganizado para dividir ejecución de acciones y final de turno ---
+    def execute_turn_actions(self, actions: List[Tuple[str, Any]], player_index: Optional[int] = None):
+        if self.game_over: return False
         if player_index is None: player_index = self.current_player_index
         player = self.players[player_index]
         self.log_msg(f"\n--- Ejecutando turno de {player.name} ---")
         
         actions_allowed = 4
         used = 0
-        for i, act in enumerate(actions, 1):
+        
+        for i, (act, param) in enumerate(actions, 1):
+            act = act.lower()
+            
+            # Events are free actions
+            if act == "event":
+                card_name = param["name"]
+                kwargs = param["kwargs"]
+                self.play_event(player_index, card_name, **kwargs)
+                continue
+            
+            # Standard actions
             if used >= actions_allowed: break
-            cmd, param = act[0].lower(), act[1]
-            self.log_msg(f"Acción {i}: {cmd} {param or ''}")
-            ok = self.perform_action((cmd, param), player_index)
+            self.log_msg(f"Acción: {act} {param or ''}")
+            ok = self.perform_action((act, param), player_index)
             if ok: used += 1
             
-            # Check WIN condition immediately after action (Standard Rule)
             if all(self.cures_discovered.values()):
                 self.game_over = True
                 self.log_msg("[VICTORIA] ¡Se descubrieron las 4 curas! ¡Habéis ganado!")
-                return
+                return True
                 
-            if self.game_over: return
-        
+            if self.game_over: return True
+        return True
+
+    def draw_phase_cards(self):
+        player = self.players[self.current_player_index]
         self.log_msg(f"\n--- Fase de Robo ({player.name}) ---")
         if not self._player_draw_card_to_hand(player): return
         if not self._player_draw_card_to_hand(player): return
-        
+    
+    def check_hand_limit(self):
+        player = self.players[self.current_player_index]
+        return len(player.hand) > self.PLAYER_HAND_LIMIT
+
+    def player_discard(self, card_name):
+        player = self.players[self.current_player_index]
+        if card_name in player.hand:
+            player.hand.remove(card_name)
+            self.player_deck.discard(card_name)
+            self.log_msg(f" -> {player.name} descartó {card_name} (exceso).")
+
+    def end_turn_sequence(self):
+        if self.game_over: return
         self.infection_phase()
         if self.game_over: return
         
         for color in ["Blue", "Yellow", "Black", "Red"]:
             self._check_and_set_eradication(color)
             
-        # Redundant win check just in case, though victory is usually action-driven
         if all(self.cures_discovered.values()):
             self.game_over = True
             self.log_msg("[VICTORIA] ¡Se descubrieron las 4 curas! ¡Habéis ganado!")
@@ -591,7 +626,7 @@ class Game:
         if len(self.players) > 0:
             self.current_player_index = (self.current_player_index + 1) % len(self.players)
 
-    def perform_action(self, action: Tuple[str, Optional[str]], player_index: int = 0) -> bool:
+    def perform_action(self, action: Tuple[str, Any], player_index: int = 0) -> bool:
         if self.game_over: return False
         player = self.players[player_index]
         act, param = action[0].lower(), action[1]
@@ -703,31 +738,135 @@ class Game:
         else:
             return False
 
-    def get_valid_direct_flights(self, player_index: int) -> List[str]:
-        # Legacy method kept for safety, but GUI now uses virtual state logic
-        player = self.players[player_index]
-        valid_cities = []
-        for card in player.hand:
-            if card.lower() in self.cities:
-                valid_cities.append(self.cities[card.lower()].name)
-        return sorted(valid_cities)
-
-    def get_valid_charter_flights(self, player_index: int) -> List[str]:
-        # Legacy method kept for safety, but GUI now uses virtual state logic
-        player = self.players[player_index]
-        current_city_name = player.location
-        has_current_city_card = False
-        for card in player.hand:
-            if card.lower() == current_city_name.lower():
-                has_current_city_card = True
-                break
-        if has_current_city_card:
-            return sorted([c.name for c in self.cities.values() if c.name != current_city_name])
-        return []
-
 # =============================================================================
 # PARTE 2: LÓGICA DE LA INTERFAZ GRÁFICA (PYGAME)
 # =============================================================================
+
+class CitySelectionModal:
+    def __init__(self, title: str, cities: List[str], game_ref, callback_confirm, callback_cancel):
+        self.title = title
+        self.cities = cities
+        self.game = game_ref
+        self.on_confirm = callback_confirm
+        self.on_cancel = callback_cancel
+        self.width = 900
+        self.height = 600
+        self.bg_color = (30, 30, 40)
+        self.border_color = (100, 100, 100)
+        
+        self.scroll_y = 0
+        self.cols = 4
+        self.item_width = 200
+        self.item_height = 40
+        self.padding = 20
+        self.start_x = 50
+        self.start_y = 100
+        
+        rows = (len(cities) + self.cols - 1) // self.cols
+        self.content_height = max(0, rows * (self.item_height + 10) - (self.height - 200))
+        
+        self.city_buttons = []
+        for i, city_name in enumerate(self.cities):
+            col = i % self.cols
+            row = i // self.cols
+            x = self.start_x + col * (self.item_width + 10)
+            y = self.start_y + row * (self.item_height + 10)
+            rect = pygame.Rect(x, y, self.item_width, self.item_height)
+            self.city_buttons.append({"name": city_name, "rect": rect})
+            
+        self.cancel_rect = pygame.Rect(self.width // 2 - 100, self.height - 60, 200, 40)
+
+    def handle_event(self, event, offset_x, offset_y):
+        if event.type == pygame.MOUSEWHEEL:
+            self.scroll_y -= event.y * 20
+            self.scroll_y = max(0, min(self.scroll_y, self.content_height))
+            return True
+
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button != 1: return False 
+            
+            mouse_pos = event.pos
+            rel_x = mouse_pos[0] - offset_x
+            rel_y = mouse_pos[1] - offset_y
+            
+            if self.cancel_rect.collidepoint(rel_x, rel_y):
+                self.on_cancel()
+                return True
+            
+            for btn in self.city_buttons:
+                visual_rect = btn["rect"].copy()
+                visual_rect.y -= self.scroll_y
+                
+                if visual_rect.y < 80 or visual_rect.y > self.height - 80:
+                    continue
+                    
+                if visual_rect.collidepoint(rel_x, rel_y):
+                    self.on_confirm(btn["name"])
+                    return True
+        return False
+
+    def draw(self, screen, screen_center):
+        modal_x = screen_center[0] - self.width // 2
+        modal_y = screen_center[1] - self.height // 2
+        modal_surface = pygame.Surface((self.width, self.height))
+        modal_surface.fill(self.bg_color)
+        pygame.draw.rect(modal_surface, self.border_color, (0, 0, self.width, self.height), 3)
+        
+        font_title = pygame.font.SysFont("Arial", 28, bold=True)
+        title_surf = font_title.render(self.title, True, (255, 255, 255))
+        modal_surface.blit(title_surf, (self.width//2 - title_surf.get_width()//2, 30))
+        
+        clip_rect = pygame.Rect(0, 80, self.width, self.height - 150)
+        modal_surface.set_clip(clip_rect)
+        
+        font_btn = pygame.font.SysFont("Arial", 16)
+        mouse_pos = pygame.mouse.get_pos()
+        rel_mouse_x = mouse_pos[0] - modal_x
+        rel_mouse_y = mouse_pos[1] - modal_y
+        
+        hovered_city_data = None
+        
+        for btn in self.city_buttons:
+            rect = btn["rect"].copy()
+            rect.y -= self.scroll_y
+            
+            if rect.bottom < 80 or rect.top > self.height - 70:
+                continue 
+                
+            is_hovered = rect.collidepoint(rel_mouse_x, rel_mouse_y)
+            color = (60, 60, 80) if not is_hovered else (100, 100, 150)
+            pygame.draw.rect(modal_surface, color, rect)
+            pygame.draw.rect(modal_surface, (150, 150, 150), rect, 1)
+            text_surf = font_btn.render(btn["name"], True, (220, 220, 220))
+            modal_surface.blit(text_surf, (rect.x + 10, rect.y + 10))
+            if is_hovered:
+                hovered_city_data = self.game.cities.get(btn["name"].lower())
+        
+        modal_surface.set_clip(None) 
+        
+        pygame.draw.rect(modal_surface, (150, 50, 50), self.cancel_rect)
+        cancel_text = font_btn.render("CANCELAR", True, (255, 255, 255))
+        modal_surface.blit(cancel_text, (self.cancel_rect.centerx - cancel_text.get_width()//2, self.cancel_rect.centery - cancel_text.get_height()//2))
+        
+        screen.blit(modal_surface, (modal_x, modal_y))
+        if hovered_city_data:
+            self._draw_tooltip(screen, mouse_pos, hovered_city_data)
+
+    def _draw_tooltip(self, screen, pos, city_obj):
+        font_tip = pygame.font.SysFont("Arial", 14)
+        info_lines = [
+            f"Color: {city_obj.color}",
+            f"Infecciones: {city_obj.infections}",
+            f"Estación: {'Sí' if city_obj.name in self.game.research_stations else 'No'}"
+        ]
+        w, h = 160, 20 + len(info_lines) * 18
+        x, y = pos[0] + 15, pos[1] + 15
+        if x + w > screen.get_width(): x -= (w + 20)
+        pygame.draw.rect(screen, (20, 20, 20), (x, y, w, h))
+        pygame.draw.rect(screen, (200, 200, 200), (x, y, w, h), 1)
+        for i, line in enumerate(info_lines):
+            t_surf = font_tip.render(line, True, (255, 255, 255))
+            screen.blit(t_surf, (x + 10, y + 10 + i * 18))
 
 class ResilientModal:
     def __init__(self, game, callback_confirm, callback_cancel):
@@ -743,6 +882,7 @@ class ResilientModal:
 
     def handle_event(self, event, ox, oy):
         if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button != 1: return False
             mx, my = event.pos
             rx, ry = mx - ox, my - oy
             if self.cancel_rect.collidepoint(rx, ry):
@@ -801,6 +941,7 @@ class ForecastModal:
 
     def handle_event(self, event, ox, oy):
         if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button != 1: return False
             mx, my = event.pos
             rx, ry = mx - ox, my - oy
             
@@ -863,6 +1004,7 @@ class AirliftModal:
             return self.city_modal.handle_event(event, ox, oy)
         
         if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button != 1: return False
             mx, my = event.pos
             rx, ry = mx - ox, my - oy
             start_x = 50
@@ -924,6 +1066,7 @@ class ShareKnowledgeModal:
 
     def handle_event(self, event, offset_x, offset_y):
         if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button != 1: return False
             mouse_pos = event.pos
             rel_x = mouse_pos[0] - offset_x
             rel_y = mouse_pos[1] - offset_y
@@ -989,6 +1132,7 @@ class ShareKnowledgeModal:
             screen.blit(modal_surface, (modal_x, modal_y))
             return
 
+        # Draw Player Selectors
         start_x = 50
         lbl = font_text.render("1. Selecciona Jugador:", True, (200, 200, 200))
         modal_surface.blit(lbl, (50, 40))
@@ -1003,6 +1147,7 @@ class ShareKnowledgeModal:
             start_x += 160
             
         if self.selected_target_player:
+            # Current Player Hand
             y_base = 150
             lbl = font_text.render(f"Tu Mano (Dar carta '{self.location}'):", True, (200, 200, 200))
             modal_surface.blit(lbl, (50, y_base))
@@ -1012,11 +1157,15 @@ class ShareKnowledgeModal:
                 is_valid = (card.lower() == self.location.lower())
                 is_sel = (self.selected_card == (card, self.current_player))
                 col = (0, 150, 0) if is_sel else ((100, 100, 120) if is_valid else (40, 40, 50))
+                
                 pygame.draw.rect(modal_surface, col, r)
                 pygame.draw.rect(modal_surface, (100, 100, 100), r, 1)
-                c_txt = font_text.render(card[:9], True, (255, 255, 255) if is_valid else (100, 100, 100))
+                
+                txt_col = (255, 255, 255) if is_valid else (100, 100, 100)
+                c_txt = font_text.render(card[:9], True, txt_col)
                 modal_surface.blit(c_txt, (r.x + 5, r.y + 10))
 
+            # Target Player Hand
             y_base = 300
             lbl = font_text.render(f"Mano de {self.selected_target_player.name} (Tomar carta '{self.location}'):", True, (200, 200, 200))
             modal_surface.blit(lbl, (50, y_base))
@@ -1026,9 +1175,12 @@ class ShareKnowledgeModal:
                 is_valid = (card.lower() == self.location.lower())
                 is_sel = (self.selected_card == (card, self.selected_target_player))
                 col = (0, 150, 0) if is_sel else ((100, 100, 120) if is_valid else (40, 40, 50))
+                
                 pygame.draw.rect(modal_surface, col, r)
                 pygame.draw.rect(modal_surface, (100, 100, 100), r, 1)
-                c_txt = font_text.render(card[:9], True, (255, 255, 255) if is_valid else (100, 100, 100))
+                
+                txt_col = (255, 255, 255) if is_valid else (100, 100, 100)
+                c_txt = font_text.render(card[:9], True, txt_col)
                 modal_surface.blit(c_txt, (r.x + 5, r.y + 10))
 
             if self.selected_card:
@@ -1039,46 +1191,38 @@ class ShareKnowledgeModal:
 
         screen.blit(modal_surface, (modal_x, modal_y))
 
-
-class CitySelectionModal:
-    def __init__(self, title: str, cities: List[str], game_ref, callback_confirm, callback_cancel):
-        self.title = title
-        self.cities = cities
+class DiscardModal:
+    def __init__(self, game_ref, callback_discard):
         self.game = game_ref
-        self.on_confirm = callback_confirm
-        self.on_cancel = callback_cancel
-        self.width = 900
-        self.height = 600
-        self.bg_color = (30, 30, 40)
-        self.border_color = (100, 100, 100)
-        self.cols = 4
-        self.item_width = 200
-        self.item_height = 40
-        self.padding = 20
-        self.start_x = 50
-        self.start_y = 100
-        self.city_buttons = []
-        for i, city_name in enumerate(self.cities):
-            col = i % self.cols
-            row = i // self.cols
-            x = self.start_x + col * (self.item_width + 10)
-            y = self.start_y + row * (self.item_height + 10)
-            rect = pygame.Rect(x, y, self.item_width, self.item_height)
-            self.city_buttons.append({"name": city_name, "rect": rect})
-        self.cancel_rect = pygame.Rect(self.width // 2 - 100, self.height - 60, 200, 40)
+        self.on_discard = callback_discard
+        self.width = 700
+        self.height = 300
+        self.bg_color = (40, 30, 30) # Dark red hint
+        self.border_color = (200, 100, 100)
+        
+        self.player = self.game.players[self.game.current_player_index]
+        self.hand = self.player.hand
+        self.selected_card = None
+        self.confirm_rect = pygame.Rect(self.width // 2 - 60, self.height - 50, 120, 40)
 
     def handle_event(self, event, offset_x, offset_y):
         if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button != 1: return False
             mouse_pos = event.pos
             rel_x = mouse_pos[0] - offset_x
             rel_y = mouse_pos[1] - offset_y
-            if self.cancel_rect.collidepoint(rel_x, rel_y):
-                self.on_cancel()
+
+            # Check cards
+            start_x = 50
+            for i, card in enumerate(self.hand):
+                r = pygame.Rect(start_x + i * 85, 100, 80, 50)
+                if r.collidepoint(rel_x, rel_y):
+                    self.selected_card = card
+            
+            # Check confirm
+            if self.selected_card and self.confirm_rect.collidepoint(rel_x, rel_y):
+                self.on_discard(self.selected_card)
                 return True
-            for btn in self.city_buttons:
-                if btn["rect"].collidepoint(rel_x, rel_y):
-                    self.on_confirm(btn["name"])
-                    return True
         return False
 
     def draw(self, screen, screen_center):
@@ -1087,47 +1231,49 @@ class CitySelectionModal:
         modal_surface = pygame.Surface((self.width, self.height))
         modal_surface.fill(self.bg_color)
         pygame.draw.rect(modal_surface, self.border_color, (0, 0, self.width, self.height), 3)
-        font_title = pygame.font.SysFont("Arial", 28, bold=True)
-        title_surf = font_title.render(self.title, True, (255, 255, 255))
-        modal_surface.blit(title_surf, (self.width//2 - title_surf.get_width()//2, 30))
-        font_btn = pygame.font.SysFont("Arial", 16)
-        mouse_pos = pygame.mouse.get_pos()
-        rel_mouse_x = mouse_pos[0] - modal_x
-        rel_mouse_y = mouse_pos[1] - modal_y
-        hovered_city_data = None
-        for btn in self.city_buttons:
-            rect = btn["rect"]
-            name = btn["name"]
-            is_hovered = rect.collidepoint(rel_mouse_x, rel_mouse_y)
-            color = (60, 60, 80) if not is_hovered else (100, 100, 150)
-            pygame.draw.rect(modal_surface, color, rect)
-            pygame.draw.rect(modal_surface, (150, 150, 150), rect, 1)
-            text_surf = font_btn.render(name, True, (220, 220, 220))
-            modal_surface.blit(text_surf, (rect.x + 10, rect.y + 10))
-            if is_hovered:
-                hovered_city_data = self.game.cities.get(name.lower())
-        pygame.draw.rect(modal_surface, (150, 50, 50), self.cancel_rect)
-        cancel_text = font_btn.render("CANCELAR", True, (255, 255, 255))
-        modal_surface.blit(cancel_text, (self.cancel_rect.centerx - cancel_text.get_width()//2, self.cancel_rect.centery - cancel_text.get_height()//2))
-        screen.blit(modal_surface, (modal_x, modal_y))
-        if hovered_city_data:
-            self._draw_tooltip(screen, mouse_pos, hovered_city_data)
 
-    def _draw_tooltip(self, screen, pos, city_obj):
-        font_tip = pygame.font.SysFont("Arial", 14)
-        info_lines = [
-            f"Color: {city_obj.color}",
-            f"Infecciones: {city_obj.infections}",
-            f"Estación: {'Sí' if city_obj.name in self.game.research_stations else 'No'}"
-        ]
-        w, h = 160, 20 + len(info_lines) * 18
-        x, y = pos[0] + 15, pos[1] + 15
-        if x + w > screen.get_width(): x -= (w + 20)
-        pygame.draw.rect(screen, (20, 20, 20), (x, y, w, h))
-        pygame.draw.rect(screen, (200, 200, 200), (x, y, w, h), 1)
-        for i, line in enumerate(info_lines):
-            t_surf = font_tip.render(line, True, (255, 255, 255))
-            screen.blit(t_surf, (x + 10, y + 10 + i * 18))
+        font_title = pygame.font.SysFont("Arial", 22, bold=True)
+        font_text = pygame.font.SysFont("Arial", 16)
+        
+        t = font_title.render(f"¡Límite de Mano Excedido! ({len(self.hand)}/7)", True, (255, 200, 200))
+        modal_surface.blit(t, (self.width//2 - t.get_width()//2, 20))
+        
+        st = font_text.render("Selecciona una carta para descartar:", True, (200, 200, 200))
+        modal_surface.blit(st, (self.width//2 - st.get_width()//2, 50))
+        
+        start_x = 50
+        for i, card in enumerate(self.hand):
+            r = pygame.Rect(start_x + i * 85, 100, 80, 50)
+            is_sel = (card == self.selected_card)
+            
+            # Get Color
+            color = (150, 150, 150)
+            if card in EVENT_NAMES:
+                color = (50, 205, 50)
+            elif card.lower() in self.game.cities:
+                 c_obj = self.game.cities[card.lower()]
+                 # Mapping colors to RGB
+                 c_map = {"Blue": (0,100,200), "Yellow": (200,200,0), "Black": (50,50,50), "Red": (200,0,0)}
+                 color = c_map.get(c_obj.color, (100,100,100))
+            
+            if is_sel:
+                pygame.draw.rect(modal_surface, (255, 255, 255), (r.x-2, r.y-2, r.w+4, r.h+4), 2)
+            
+            pygame.draw.rect(modal_surface, color, r)
+            pygame.draw.rect(modal_surface, (0, 0, 0), r, 1)
+            
+            txt_col = (255,255,255) if color == (50,50,50) else (0,0,0)
+            disp = card[:9]
+            t_card = font_text.render(disp, True, txt_col)
+            modal_surface.blit(t_card, (r.x+5, r.y+15))
+
+        if self.selected_card:
+            pygame.draw.rect(modal_surface, (200, 50, 50), self.confirm_rect)
+            t_conf = font_title.render("DESCARTAR", True, (255,255,255))
+            modal_surface.blit(t_conf, (self.confirm_rect.centerx - t_conf.get_width()//2, self.confirm_rect.centery - t_conf.get_height()//2))
+
+        screen.blit(modal_surface, (modal_x, modal_y))
+
 
 class PlayerHandsModal:
     def __init__(self, game_ref, callback_close):
@@ -1141,6 +1287,7 @@ class PlayerHandsModal:
 
     def handle_event(self, event, offset_x, offset_y):
         if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button != 1: return False
             mouse_pos = event.pos
             rel_x = mouse_pos[0] - offset_x
             rel_y = mouse_pos[1] - offset_y
@@ -1157,10 +1304,10 @@ class PlayerHandsModal:
         pygame.draw.rect(modal_surface, self.border_color, (0, 0, self.width, self.height), 3)
 
         font_title = pygame.font.SysFont("Arial", 22, bold=True)
+        font_text = pygame.font.SysFont("Arial", 16)
         title = font_title.render("Manos de otros jugadores", True, (255, 255, 255))
         modal_surface.blit(title, (self.width // 2 - title.get_width() // 2, 20))
 
-        font_text = pygame.font.SysFont("Arial", 16)
         start_y = 60
         
         for player in self.game.players:
@@ -1218,6 +1365,7 @@ class MainMenu:
 
     def handle_event(self, event):
         if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button != 1: return # Only left click
             # Seed Input Focus
             if self.seed_rect.collidepoint(event.pos):
                 self.entering_seed = True
@@ -1250,8 +1398,9 @@ class MainMenu:
         else:
             screen.fill(self.bg_color)
         
+        # --- Changed Game Title ---
         if not self.bg_image: 
-            title = self.font_large.render("PANDEMIC", True, (255, 50, 50))
+            title = self.font_large.render("EPIDEMICS", True, (255, 50, 50))
             screen.blit(title, (self.screen_size[0]//2 - title.get_width()//2, 80))
         
         sub = self.font_medium.render("Jugadores:", True, self.text_color)
@@ -1299,40 +1448,54 @@ class PandemicGUI:
         self.screen = screen
         self.screen_size = screen.get_size()
         
-        try:
-            self.map_image = pygame.image.load("map.png").convert()
-            self.map_image = pygame.transform.scale(self.map_image, self.screen_size)
-        except pygame.error:
-            self.map_image = pygame.Surface(self.screen_size)
-            self.map_image.fill((20, 20, 50))
-            print("ADVERTENCIA: No se encontró 'map.png'.")
+        # --- Robust Image Loading ---
+        def load_image_or_create_fallback(filename: str, size: Tuple[int, int], color: Tuple[int, int] = (255, 0, 255)) -> Optional[pygame.Surface]:
+            try:
+                img = pygame.image.load(filename).convert_alpha()
+                # --- Resize Specifics Requested by User ---
+                if 'infection_track_mark.png' in filename:
+                     return pygame.transform.scale(img, (309, 38)) 
+                
+                if filename == 'infection.png':
+                    return pygame.transform.scale(img, (70, 70))
 
+                return pygame.transform.scale(img, size)
+            except pygame.error:
+                print(f"ADVERTENCIA: No se encontró la imagen '{filename}'. Usando fallback.")
+                fallback = pygame.Surface(size, pygame.SRCALPHA)
+                fallback.fill(color)
+                return fallback
+
+        # 1. Map and Menu Backgrounds
+        self.map_image = load_image_or_create_fallback("map.png", self.screen_size, (20, 20, 50))
+
+        # 2. Player Images
         self.player_images = []
         for i in range(1, 5):
-            try:
-                img = pygame.image.load(f"ficha{i}.png").convert_alpha()
-                img = pygame.transform.scale(img, (16, 30))
-                self.player_images.append(img)
-            except pygame.error:
-                self.player_images.append(None)
+            img = load_image_or_create_fallback(f"ficha{i}.png", (16, 30), (255, 255, 255, 128))
+            self.player_images.append(img)
 
+        # 3. Disease/City Markers
         self.city_colors_imgs = {}
-        for c_name, c_file in [("Blue", "azul.png"), ("Yellow", "amarillo.png"), ("Black", "negro.png"), ("Red", "rojo.png")]:
-            try:
-                img = pygame.image.load(c_file).convert_alpha()
-                img = pygame.transform.scale(img, (30, 30))
-                self.city_colors_imgs[c_name] = img
-            except pygame.error:
-                 self.city_colors_imgs[c_name] = None
+        files_map = {
+            "Blue": ("azul.png", "centro_azul.png", (0, 100, 255)),
+            "Yellow": ("amarillo.png", "centro_amarillo.png", (255, 255, 0)),
+            "Black": ("negro.png", "centro_negro.png", (50, 50, 50)),
+            "Red": ("rojo.png", "centro_rojo.png", (255, 0, 0))
+        }
         
-        self.infection_track_img = None
-        self.infection_marker_img = None
-        try:
-            self.infection_track_img = pygame.image.load("infection_track_mark.png").convert_alpha()
-            self.infection_marker_img = pygame.image.load("infection.png").convert_alpha()
-            self.infection_marker_img = pygame.transform.scale(self.infection_marker_img, (38, 38))
-        except pygame.error:
-            pass
+        for c_name, (norm_file, center_file, fallback_color) in files_map.items():
+            # Standard
+            self.city_colors_imgs[c_name] = load_image_or_create_fallback(norm_file, (30, 30), fallback_color)
+            
+            # Center
+            center_img = load_image_or_create_fallback(center_file, (30, 30), fallback_color)
+            self.city_colors_imgs[c_name + "_Center"] = center_img
+        
+        # 4. Track Markers
+        # Updated per request: Track 309x38, Marker 70x70
+        self.infection_track_img = load_image_or_create_fallback("infection_track_mark.png", (309, 38), (100, 100, 100))
+        self.infection_marker_img = load_image_or_create_fallback("infection.png", (70, 70), (255, 50, 50))
 
         self.font_small = pygame.font.SysFont("Arial", 14)
         self.font_medium = pygame.font.SysFont("Arial", 18, bold=True)
@@ -1342,7 +1505,7 @@ class PandemicGUI:
             "Blue": (0, 100, 255), "Yellow": (255, 255, 0),
             "Black": (50, 50, 50), "Red": (255, 0, 0),
             "White": (255, 255, 255), "UI_BG": (10, 10, 20, 200),
-            "Text": (200, 200, 220)
+            "Text": (255, 255, 255)
         }
 
         self.city_coords = {
@@ -1358,7 +1521,7 @@ class PandemicGUI:
             "Moscow": (750, 110), "Baghdad": (760, 210), "Tehran": (820, 170),
             "Riyadh": (780, 290), "Karachi": (860, 240), "Delhi": (920, 200),
             "Mumbai": (880, 310), "Chennai": (940, 370), "Kolkata": (1000, 220),
-            "Bangkok": (1010, 300), "Jakarta": (1020, 410), "Ho Chi Minh City": (1080, 340),
+            "Bangkok": (1010, 300), "Jakarta": (1020, 410), "Ho Chi Minh": (1080, 340),
             "Hong Kong": (1060, 270), "Shanghai": (1050, 190), "Beijing": (1040, 120),
             "Seoul": (1120, 120), "Tokyo": (1180, 150), "Osaka": (1180, 210),
             "Taipei": (1130, 260), "Manila": (1150, 340), "Sydney": (1180, 510)
@@ -1381,6 +1544,9 @@ class PandemicGUI:
         }
         self.actions_menu_rects = []
         self._init_action_menu_rects()
+        
+        # Log Scroll
+        self.log_scroll_offset = 0
 
     def _create_buttons(self):
         buttons = {}
@@ -1414,13 +1580,21 @@ class PandemicGUI:
                     running = False
                     return "EXIT"
                 
+                # Log Scrolling
+                if event.type == pygame.MOUSEWHEEL:
+                    mx, my = pygame.mouse.get_pos()
+                    # Check if over log
+                    if 1000 <= mx <= 1270 and 610 <= my <= 790:
+                         self.log_scroll_offset += event.y
+                         self.log_scroll_offset = max(0, min(self.log_scroll_offset, len(self.game.log) - 9))
+
                 if self.active_modal:
                     offset_x = self.screen_size[0] // 2 - self.active_modal.width // 2
                     offset_y = self.screen_size[1] // 2 - self.active_modal.height // 2
                     if hasattr(self.active_modal, "handle_event"):
                         if self.active_modal.handle_event(event, offset_x, offset_y): pass
                 else:
-                    if event.type == pygame.MOUSEBUTTONDOWN and not self.game.game_over:
+                    if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and not self.game.game_over:
                         self.handle_click(event.pos)
                     if event.type == pygame.KEYDOWN and self.game.game_over:
                         if event.key == pygame.K_ESCAPE:
@@ -1465,6 +1639,17 @@ class PandemicGUI:
                         sim_hand.remove(c)
                         sim_stations.append(sim_loc)
                         break
+            elif act == "event":
+                 card_name = param["name"]
+                 if card_name in sim_hand: sim_hand.remove(card_name)
+                 kwargs = param.get("kwargs", {})
+                 if card_name == "PUENTE_AEREO":
+                     if kwargs.get("target_player_idx") == self.game.current_player_index:
+                         sim_loc = kwargs.get("dest_city")
+                 elif card_name == "SUBSIDIO_GUBERNAMENTAL":
+                     t = kwargs.get("target_city")
+                     if t: sim_stations.append(t)
+            
         return sim_loc, sim_hand, sim_stations
 
     def handle_click(self, pos):
@@ -1483,12 +1668,16 @@ class PandemicGUI:
             else:
                 return 
 
-        # 1. Check Hand for Events
+        # 1. Check Hand for Events (Update coord check due to line wrap)
         start_x = 280
         start_y = 640
         player = self.game.players[self.game.current_player_index]
         for i, card in enumerate(player.hand):
-            r = pygame.Rect(start_x + i * 80, start_y, 75, 45)
+            # Calculate position same as draw_current_hand
+            x_pos = start_x + (i % 4) * 80
+            y_pos = start_y + (i // 4) * 50
+            r = pygame.Rect(x_pos, y_pos, 75, 45)
+            
             if r.collidepoint(pos):
                 if card in EVENT_NAMES:
                     self._trigger_event(card)
@@ -1497,7 +1686,9 @@ class PandemicGUI:
         # 2. Check City Clicks (Move)
         for city_name, city_pos in self.city_coords.items():
             if pygame.Rect(city_pos[0]-15, city_pos[1]-15, 30, 30).collidepoint(pos):
-                if len(self.planned_actions) < 4:
+                # Count only standard actions
+                std_actions = sum(1 for a in self.planned_actions if a[0] != "event")
+                if std_actions < 4:
                     self.planned_actions.append(("move", city_name))
                 return
 
@@ -1507,52 +1698,84 @@ class PandemicGUI:
                 if name == "actions_menu":
                     self.show_actions_menu = not self.show_actions_menu
                 elif name == "execute":
-                    if len(self.planned_actions) != 4:
-                        self.game.log_msg("Debes seleccionar exactamente 4 acciones.")
-                        return
-                    
-                    # Validate whole plan with simulated state
-                    if not self.game.validate_turn_plan(self.game.current_player_index, self.planned_actions):
-                         self.game.log_msg(f"Error: La secuencia de acciones no es válida.")
-                         return
-                         
-                    self.game.run_turn(self.planned_actions)
-                    self.planned_actions = []
-                    
+                    self._handle_execute_turn()
                 elif name == "clear":
                     self.planned_actions = []
                 elif name == "view_others":
                     self.active_modal = PlayerHandsModal(self.game, self._on_modal_cancel)
                 return
 
+    def _handle_execute_turn(self):
+        std_actions = sum(1 for a in self.planned_actions if a[0] != "event")
+        if std_actions != 4:
+            self.game.log_msg("Debes seleccionar exactamente 4 acciones (los eventos son libres).")
+            return
+        
+        # Validate whole plan
+        if not self.game.validate_turn_plan(self.game.current_player_index, self.planned_actions):
+             self.game.log_msg(f"Error: La secuencia de acciones no es válida.")
+             return
+        
+        # 1. Execute Actions
+        if not self.game.execute_turn_actions(self.planned_actions):
+             # Game Over triggered during actions
+             self.planned_actions = []
+             return
+
+        self.planned_actions = []
+
+        # 2. Draw Cards
+        self.game.draw_phase_cards()
+        if self.game.game_over: return
+        
+        # 3. Check Hand Limit
+        if self.game.check_hand_limit():
+            self.active_modal = DiscardModal(self.game, self._on_discard_confirm)
+        else:
+            self._finish_turn_sequence()
+
+    def _on_discard_confirm(self, card_name):
+        self.game.player_discard(card_name)
+        # Check if still over limit
+        if self.game.check_hand_limit():
+             # Re-open/Keep open logic implied, just don't close or reset modal state
+             pass
+        else:
+             self.active_modal = None
+             self._finish_turn_sequence()
+
+    def _finish_turn_sequence(self):
+        self.game.end_turn_sequence()
+
     def _trigger_event(self, card_name):
         # Specific Modals for Events
         if card_name == "UNA_NOCHE_TRANQUILA":
-            self.game.play_event(self.game.current_player_index, card_name)
+            # Direct queue
+            self._queue_event(card_name, {})
         
         elif card_name == "POBLACION_RESILIENTE":
             self.active_modal = ResilientModal(self.game, 
-                lambda target: self._on_event_confirm(card_name, target_card=target), 
+                lambda target: self._queue_event(card_name, {"target_card": target}), 
                 self._on_modal_cancel)
                 
         elif card_name == "SUBSIDIO_GUBERNAMENTAL":
             self.active_modal = CitySelectionModal("Seleccionar Ciudad para Estación (Subsidio)",
                 [c for c in self.game.cities], self.game,
-                lambda c: self._on_event_confirm(card_name, target_city=c),
+                lambda c: self._queue_event(card_name, {"target_city": c}),
                 self._on_modal_cancel)
                 
         elif card_name == "PUENTE_AEREO":
             self.active_modal = AirliftModal(self.game,
-                lambda pid, dest: self._on_event_confirm(card_name, target_player_idx=pid, dest_city=dest),
+                lambda pid, dest: self._queue_event(card_name, {"target_player_idx": pid, "dest_city": dest}),
                 self._on_modal_cancel)
                 
         elif card_name == "PREDICCION":
             self.active_modal = ForecastModal(self.game,
-                lambda order: self._on_event_confirm(card_name, new_order=order),
+                lambda order: self._queue_event(card_name, {"new_order": order}),
                 self._on_modal_cancel)
 
-    def _on_event_confirm(self, card_name, **kwargs):
-        self.game.play_event(self.game.current_player_index, card_name, **kwargs)
+    def _queue_event(self, card_name, kwargs):
+        self.planned_actions.append(("event", {"name": card_name, "kwargs": kwargs}))
         self.active_modal = None
 
     def _trigger_action(self, action_key):
@@ -1626,11 +1849,13 @@ class PandemicGUI:
             )
             
         else:
-            if len(self.planned_actions) < 4:
+            std_actions = sum(1 for a in self.planned_actions if a[0] != "event")
+            if std_actions < 4:
                 self.planned_actions.append((action_key, None))
 
     def _on_modal_confirm(self, action_type, city_name):
-        if len(self.planned_actions) < 4:
+        std_actions = sum(1 for a in self.planned_actions if a[0] != "event")
+        if std_actions < 4:
             self.planned_actions.append((action_type, city_name))
         self.active_modal = None
 
@@ -1690,21 +1915,38 @@ class PandemicGUI:
         for city_name, city_pos in self.city_coords.items():
             city_obj = self.game.cities.get(city_name.lower())
             if not city_obj: continue
-            if city_obj.color in self.city_colors_imgs and self.city_colors_imgs[city_obj.color]:
-                img = self.city_colors_imgs[city_obj.color]
-                self.screen.blit(img, (city_pos[0]-15, city_pos[1]-15))
-            else:
-                 pygame.draw.circle(self.screen, self.colors[city_obj.color], city_pos, 10)
+            
+            # Determine image key
+            base_key = city_obj.color
+            key = base_key
             if city_name in self.game.research_stations:
-                pygame.draw.rect(self.screen, self.colors["White"], (city_pos[0]-6, city_pos[1]-6, 12, 12))
+                key = base_key + "_Center"
+            
+            img = self.city_colors_imgs.get(key)
+            
+            # Fallback if center image missing but station exists: use base image
+            if not img and "_Center" in key:
+                 img = self.city_colors_imgs.get(base_key)
+            
+            if img:
+                self.screen.blit(img, (city_pos[0]-15, city_pos[1]-15))
+                # Only draw white rect if we fell back to normal image for a station
+                if city_name in self.game.research_stations and key != (base_key + "_Center"):
+                     pygame.draw.rect(self.screen, self.colors["White"], (city_pos[0]-6, city_pos[1]-6, 12, 12))
+            else:
+                 # Fallback to circle
+                 pygame.draw.circle(self.screen, self.colors[city_obj.color], city_pos, 10)
+                 if city_name in self.game.research_stations:
+                     pygame.draw.rect(self.screen, self.colors["White"], (city_pos[0]-6, city_pos[1]-6, 12, 12))
+
             if city_obj.infections > 0:
                 color = self.colors[city_obj.color]
                 for i in range(city_obj.infections):
                     pygame.draw.rect(self.screen, color, (city_pos[0] + 10 + i * 12, city_pos[1] - 10, 10, 10))
                 count_text = self.font_medium.render(str(city_obj.infections), True, self.colors["White"])
                 self.screen.blit(count_text, (city_pos[0] + 12, city_pos[1] - 30))
+            
             text = self.font_small.render(city_name, True, self.colors["Text"])
-            pygame.draw.rect(self.screen, self.colors["Black"], (city_pos[0]-2, city_pos[1]-2, text.get_width()+4, text.get_height()+4))
             self.screen.blit(text, city_pos)
 
     def draw_players(self):
@@ -1729,16 +1971,27 @@ class PandemicGUI:
     def draw_infection_track(self):
         base_x = self.screen_size[0] - 320
         base_y = 20
+        # --- Infection Track Logic: 309x38 ---
         if self.infection_track_img:
             self.screen.blit(self.infection_track_img, (base_x, base_y))
             idx = self.game.infection_rate_index
             if idx >= 7: idx = 6
-            circle_width = 38
-            spacing = 8
-            marker_x = base_x + (idx * (circle_width + spacing))
+            
+            # 7 steps across 309 pixels width
+            step_width = 309 / 7
+            marker_x = base_x + (idx * step_width)
             marker_y = base_y
+            
             if self.infection_marker_img:
-                self.screen.blit(self.infection_marker_img, (marker_x, marker_y))
+                # Center 70px marker on step slot
+                # (step_width / 2) - (marker_width / 2) -> centers relative to step
+                marker_centered_x = marker_x + (step_width / 2) - (70 / 2)
+                
+                # Center vertically relative to 38px height track
+                # (track_height / 2) - (marker_height / 2)
+                marker_centered_y = marker_y + (38 / 2) - (70 / 2)
+                
+                self.screen.blit(self.infection_marker_img, (marker_centered_x, marker_centered_y))
         else:
              rate_text = f"Tasa Infección: {self.game.infection_rate_list[self.game.infection_rate_index]}"
              self.screen.blit(self.font_medium.render(rate_text, True, self.colors["Yellow"]), (self.screen_size[0] - 250, 20))
@@ -1763,6 +2016,14 @@ class PandemicGUI:
         self.screen.blit(title, (start_x, 615))
 
         for i, card in enumerate(player.hand):
+            # --- Hand Wrap Logic (4 cards per row) ---
+            col = i % 4
+            row = i // 4
+            x_pos = start_x + col * 80
+            y_pos = start_y + row * 50
+            
+            card_rect = pygame.Rect(x_pos, y_pos, 75, 45)
+
             if card in EVENT_NAMES:
                 color = (50, 205, 50) # Lime Green
                 display_text = EVENT_DISPLAY_NAMES[card]
@@ -1775,11 +2036,13 @@ class PandemicGUI:
                     color = self.colors["White"]
                 display_text = card[:12]
             
-            card_rect = pygame.Rect(start_x + i * 80, start_y, 75, 45)
             pygame.draw.rect(self.screen, color, card_rect)
             pygame.draw.rect(self.screen, (0,0,0), card_rect, 1)
             
-            card_text = self.font_small.render(display_text, True, self.colors["Black"])
+            txt_col = self.colors["Black"]
+            if color == self.colors["Black"]: txt_col = (255, 255, 255)
+            
+            card_text = self.font_small.render(display_text, True, txt_col)
             self.screen.blit(card_text, (card_rect.x + 3, card_rect.y + 15))
 
     def draw_planned_actions(self):
@@ -1787,7 +2050,12 @@ class PandemicGUI:
         title = self.font_medium.render("Acciones Planeadas:", True, self.colors["Text"])
         self.screen.blit(title, (start_x, 615))
         for i, (action, param) in enumerate(self.planned_actions):
-            text = f"{i+1}. {action} {param or ''}"
+            text = ""
+            if action == "event":
+                text = f"{i+1}. Evento: {EVENT_DISPLAY_NAMES.get(param['name'], param['name'])}"
+            else:
+                text = f"{i+1}. {action} {param or ''}"
+            
             action_text = self.font_small.render(text, True, self.colors["Text"])
             self.screen.blit(action_text, (start_x, 645 + i * 20))
     
@@ -1796,8 +2064,10 @@ class PandemicGUI:
             color = self.colors["Blue"]
             if name == "actions_menu" and self.show_actions_menu:
                 color = (100, 100, 150)
-            if name == "execute" and len(self.planned_actions) != 4:
-                color = (100, 100, 100)
+            if name == "execute":
+                std_actions = sum(1 for a in self.planned_actions if a[0] != "event")
+                if std_actions != 4:
+                     color = (100, 100, 100)
             pygame.draw.rect(self.screen, color, btn["rect"])
             pygame.draw.rect(self.screen, (200, 200, 200), btn["rect"], 1)
             text = self.font_medium.render(btn["text"], True, self.colors["White"])
@@ -1823,7 +2093,20 @@ class PandemicGUI:
         log_surface.set_alpha(180)
         log_surface.fill(self.colors["UI_BG"])
         self.screen.blit(log_surface, (start_x, start_y))
-        for i, msg in enumerate(self.game.log[-9:]):
+        
+        # Calculate view
+        visible_lines = 9
+        total_lines = len(self.game.log)
+        
+        # Determine start index based on scroll offset. 
+        # offset 0 = show latest 9 lines (end of list)
+        # offset N = go back N lines
+        end_idx = total_lines - self.log_scroll_offset
+        start_idx = max(0, end_idx - visible_lines)
+        
+        msgs_to_show = self.game.log[start_idx:end_idx]
+        
+        for i, msg in enumerate(msgs_to_show):
             log_text = self.font_small.render(msg, True, self.colors["Text"])
             self.screen.blit(log_text, (start_x + 10, start_y + 10 + i * 18))
 
@@ -1847,7 +2130,7 @@ def main():
     pygame.init()
     screen_size = (1280, 800)
     screen = pygame.display.set_mode(screen_size)
-    pygame.display.set_caption("Pandemic (ES)")
+    pygame.display.set_caption("EPIDEMICS (ES)") # --- Changed Game Title in window caption ---
     
     while True:
         menu = MainMenu(screen_size)
@@ -1873,9 +2156,25 @@ def main():
         except:
             seed_val = 42
 
-        game = Game(num_players=menu.num_players, seed=seed_val)
-        gui = PandemicGUI(game, screen)
-        result = gui.run()
+        try:
+            print(f"DEBUG: Intentando iniciar Game con seed={seed_val}")
+            game = Game(num_players=menu.num_players, seed=seed_val)
+            print("DEBUG: Game creado. Iniciando GUI...")
+            gui = PandemicGUI(game, screen)
+            print("DEBUG: GUI creada. Ejecutando run()...")
+            result = gui.run()
+        except Exception as e:
+            print("\n" * 5)
+            print("=" * 50)
+            print("CRITICAL PYGAME/ASSET ERROR:")
+            print("=" * 50)
+            traceback.print_exc()
+            print("=" * 50)
+            print("EL JUEGO FALLÓ DEBIDO A UN ERROR DE IMAGEN O INICIALIZACIÓN.")
+            print("POR FAVOR, REVISA LOS MENSAJES DE 'ADVERTENCIA' ARRIBA EN EL LOG.")
+            print("=" * 50)
+            print("\n" * 5)
+            result = "MENU"
         
         if result == "EXIT":
             break
