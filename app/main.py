@@ -539,6 +539,51 @@ class Game:
         elif act == "skip":
             self.log_msg(f"[ACCIÓN] {player.name} salta una acción.")
             return True
+        
+        elif act == "direct_flight":
+            dest_name = param
+            player = self.players[player_index]
+            
+            # Validation: Player must have the card of the destination
+            card_found = None
+            for card in player.hand:
+                if card.lower() == dest_name.lower():
+                    card_found = card
+                    break
+            
+            if not card_found:
+                self.log_msg(f"[ERROR] No tienes la carta de {dest_name} para Vuelo Directo.")
+                return False
+
+            # Execute
+            player.move_to(dest_name)
+            player.hand.remove(card_found)
+            self.player_deck.discard(card_found)
+            self.log_msg(f"[ACCIÓN] {player.name} realizó Vuelo Directo a {dest_name} (descartó {card_found}).")
+            return True
+
+        elif act == "charter_flight":
+            dest_name = param
+            player = self.players[player_index]
+            origin = player.location
+
+            # Validation: Player must have the card of their CURRENT location
+            origin_card_found = None
+            for card in player.hand:
+                if card.lower() == origin.lower():
+                    origin_card_found = card
+                    break
+            
+            if not origin_card_found:
+                self.log_msg(f"[ERROR] No tienes la carta de {origin} para Vuelo Charter.")
+                return False
+            
+            # Execute
+            player.move_to(dest_name)
+            player.hand.remove(origin_card_found)
+            self.player_deck.discard(origin_card_found)
+            self.log_msg(f"[ACCIÓN] {player.name} realizó Vuelo Charter de {origin} a {dest_name}.")
+            return True
 
         else:
             self.log_msg(f"[ACCIÓN] Acción desconocida: {act}")
@@ -557,10 +602,187 @@ class Game:
         if self.game_over:
             self.log_msg(f"*** JUEGO TERMINADO: {self.defeat_reason or 'Victoria'} ***")
         self.log_msg("================================\n")
+    
+    # In app/main.py -> Class Game
+
+    # --- NEW HELPER METHODS FOR FLIGHT LOGIC ---
+    def get_valid_direct_flights(self, player_index: int) -> List[str]:
+        """
+        Direct Flight: Discard a City card to move to the city named on the card.
+        Returns a list of city names the player has in their hand.
+        """
+        player = self.players[player_index]
+        valid_cities = []
+        for card in player.hand:
+            # Check if the card in hand corresponds to a valid city on the board
+            if card.lower() in self.cities:
+                valid_cities.append(self.cities[card.lower()].name)
+        return sorted(valid_cities)
+
+    def get_valid_charter_flights(self, player_index: int) -> List[str]:
+        """
+        Charter Flight: Discard the City card that matches your current location to move to ANY city.
+        Returns ALL cities if player has current city card, else empty list.
+        """
+        player = self.players[player_index]
+        current_city_name = player.location
+        
+        # Check if player has the card of their current location
+        has_current_city_card = False
+        for card in player.hand:
+            if card.lower() == current_city_name.lower():
+                has_current_city_card = True
+                break
+        
+        if has_current_city_card:
+            # Can fly anywhere except current location
+            return sorted([c.name for c in self.cities.values() if c.name != current_city_name])
+        return []
+
+    # --- UPDATE perform_action TO HANDLE NEW ACTIONS ---
+    # Add these elif blocks to your existing perform_action method
+    
+    # ... inside perform_action(self, action, player_index) ...
+    
+    
 
 # =============================================================================
 # PARTE 2: LÓGICA DE LA INTERFAZ GRÁFICA (PYGAME)
 # =============================================================================
+
+class CitySelectionModal:
+    def __init__(self, title: str, cities: List[str], game_ref, callback_confirm, callback_cancel):
+        self.title = title
+        self.cities = cities
+        self.game = game_ref
+        self.on_confirm = callback_confirm
+        self.on_cancel = callback_cancel
+        
+        # UI Layout Dimensions
+        self.width = 900
+        self.height = 600
+        self.bg_color = (30, 30, 40)
+        self.border_color = (100, 100, 100)
+        
+        # Grid layout for cities
+        self.cols = 4
+        self.item_width = 200
+        self.item_height = 40
+        self.padding = 20
+        self.start_x = 50
+        self.start_y = 100
+
+        # Pre-calculate rects for all city buttons
+        self.city_buttons = []
+        for i, city_name in enumerate(self.cities):
+            col = i % self.cols
+            row = i // self.cols
+            x = self.start_x + col * (self.item_width + 10)
+            y = self.start_y + row * (self.item_height + 10)
+            rect = pygame.Rect(x, y, self.item_width, self.item_height)
+            self.city_buttons.append({"name": city_name, "rect": rect})
+
+        # Cancel button
+        self.cancel_rect = pygame.Rect(self.width // 2 - 100, self.height - 60, 200, 40)
+
+    def handle_event(self, event, offset_x, offset_y):
+        """
+        Returns True if the modal should close, False otherwise.
+        offset_x/y: The modal's position on the main screen.
+        """
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            mouse_pos = event.pos
+            # Adjust mouse pos to be relative to modal
+            rel_x = mouse_pos[0] - offset_x
+            rel_y = mouse_pos[1] - offset_y
+            
+            # Check Cancel
+            if self.cancel_rect.collidepoint(rel_x, rel_y):
+                self.on_cancel()
+                return True
+                
+            # Check City Clicks
+            for btn in self.city_buttons:
+                if btn["rect"].collidepoint(rel_x, rel_y):
+                    self.on_confirm(btn["name"])
+                    return True
+        return False
+
+    def draw(self, screen, screen_center):
+        # Calculate modal position to center it
+        modal_x = screen_center[0] - self.width // 2
+        modal_y = screen_center[1] - self.height // 2
+        
+        # 1. Draw Modal Background & Border
+        modal_surface = pygame.Surface((self.width, self.height))
+        modal_surface.fill(self.bg_color)
+        pygame.draw.rect(modal_surface, self.border_color, (0, 0, self.width, self.height), 3)
+
+        # 2. Draw Title
+        font_title = pygame.font.SysFont("Arial", 28, bold=True)
+        title_surf = font_title.render(self.title, True, (255, 255, 255))
+        modal_surface.blit(title_surf, (self.width//2 - title_surf.get_width()//2, 30))
+
+        # 3. Draw City Buttons
+        font_btn = pygame.font.SysFont("Arial", 16)
+        mouse_pos = pygame.mouse.get_pos()
+        rel_mouse_x = mouse_pos[0] - modal_x
+        rel_mouse_y = mouse_pos[1] - modal_y
+        
+        hovered_city_data = None
+
+        for btn in self.city_buttons:
+            rect = btn["rect"]
+            name = btn["name"]
+            
+            # Check hover
+            is_hovered = rect.collidepoint(rel_mouse_x, rel_mouse_y)
+            color = (60, 60, 80) if not is_hovered else (100, 100, 150)
+            
+            pygame.draw.rect(modal_surface, color, rect)
+            pygame.draw.rect(modal_surface, (150, 150, 150), rect, 1)
+            
+            text_surf = font_btn.render(name, True, (220, 220, 220))
+            modal_surface.blit(text_surf, (rect.x + 10, rect.y + 10))
+            
+            if is_hovered:
+                hovered_city_data = self.game.cities.get(name.lower())
+
+        # 4. Draw Cancel Button
+        pygame.draw.rect(modal_surface, (150, 50, 50), self.cancel_rect)
+        cancel_text = font_btn.render("CANCEL", True, (255, 255, 255))
+        modal_surface.blit(cancel_text, (self.cancel_rect.centerx - cancel_text.get_width()//2, self.cancel_rect.centery - cancel_text.get_height()//2))
+
+        # 5. Blit modal to main screen
+        screen.blit(modal_surface, (modal_x, modal_y))
+
+        # 6. Draw Tooltip (Last, so it's on top of everything)
+        if hovered_city_data:
+            self._draw_tooltip(screen, mouse_pos, hovered_city_data)
+
+    def _draw_tooltip(self, screen, pos, city_obj):
+        font_tip = pygame.font.SysFont("Arial", 14)
+        info_lines = [
+            f"Color: {city_obj.color}",
+            f"Infections: {city_obj.infections}",
+            f"Station: {'Yes' if city_obj.name in self.game.research_stations else 'No'}"
+        ]
+        
+        # Calculate tooltip size
+        w, h = 160, 20 + len(info_lines) * 18
+        x, y = pos[0] + 15, pos[1] + 15
+        
+        # Keep tooltip on screen
+        if x + w > screen.get_width(): x -= (w + 20)
+        
+        # Draw tooltip bg
+        pygame.draw.rect(screen, (20, 20, 20), (x, y, w, h))
+        pygame.draw.rect(screen, (200, 200, 200), (x, y, w, h), 1)
+        
+        # Draw lines
+        for i, line in enumerate(info_lines):
+            t_surf = font_tip.render(line, True, (255, 255, 255))
+            screen.blit(t_surf, (x + 10, y + 10 + i * 18))
 
 class PandemicGUI:
     def __init__(self, game: Game):
@@ -605,16 +827,23 @@ class PandemicGUI:
             "Beijing": (980, 260), "Seoul": (1050, 260), "Tokyo": (1120, 290),
             "Shanghai": (990, 320), "Hong Kong": (1000, 390),
             # --- Completa el resto de ciudades si quieres mostrarlas en el mapa ---
+
+            #blue = ["San Francisco","Chicago","Atlanta","Montreal","New York","Washington","London","Madrid","Paris","Essen","Milan","St. Petersburg"]
+            #yellow = ["Los Angeles","Mexico City","Miami","Bogota","Lima","Santiago","Buenos Aires","Sao Paulo","Lagos","Khartoum","Kinshasa","Johannesburg"]
+            #black = ["Algiers","Istanbul","Moscow","Cairo","Baghdad","Tehran","Karachi","Riyadh","Delhi","Mumbai","Chennai","Kolkata"]
+            #red = ["Bangkok","Jakarta","Ho Chi Minh City","Hong Kong","Shanghai","Beijing","Seoul","Tokyo","Osaka","Taipei","Manila","Sydney"]
         }
 
         # Estado de la UI
         self.planned_actions: List[Tuple[str, Optional[str]]] = []
         self.buttons = self._create_buttons()
+        self.active_modal: Optional[CitySelectionModal] = None
+
 
     def _create_buttons(self):
         """Crea los rectángulos y textos para los botones de la UI."""
         buttons = {}
-        actions = ["Cure", "Build", "Discover Cure", "Share", "Shuttle"]
+        actions = ["Cure", "Build", "Direct Flight", "Charter Flight", "Discover Cure", "Share", "Shuttle"]
         y_pos = 650
         for i, action in enumerate(actions):
             buttons[action.lower()] = {
@@ -637,8 +866,20 @@ class PandemicGUI:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
-                if event.type == pygame.MOUSEBUTTONDOWN and not self.game.game_over:
-                    self.handle_click(event.pos)
+
+                if self.active_modal:
+                    # Calculate offset for mouse calculations within modal
+                    offset_x = self.screen_size[0] // 2 - self.active_modal.width // 2
+                    offset_y = self.screen_size[1] // 2 - self.active_modal.height // 2
+                    
+                    if self.active_modal.handle_event(event, offset_x, offset_y):
+                        # If handle_event returns True, logic is handled inside callbacks, 
+                        # so we just check if we need to close
+                        pass
+                else:
+                    # Normal Game Handling
+                    if event.type == pygame.MOUSEBUTTONDOWN and not self.game.game_over:
+                        self.handle_click(event.pos)
 
             # 2. Dibujar todo en pantalla
             self.draw()
@@ -650,27 +891,82 @@ class PandemicGUI:
         pygame.quit()
 
     def handle_click(self, pos):
-        """Procesa un clic del ratón."""
-        # Comprobar si se ha pulsado un botón de la UI
+        # 1. Check if a City was clicked (Standard 'Move' logic)
+        for city_name, city_pos in self.city_coords.items():
+            # Create a small hit box around the city dot
+            if pygame.Rect(city_pos[0]-10, city_pos[1]-10, 20, 20).collidepoint(pos):
+                if len(self.planned_actions) < 4:
+                    self.planned_actions.append(("move", city_name))
+                return
+
+        # 2. Check UI Buttons
         for name, btn in self.buttons.items():
             if btn["rect"].collidepoint(pos):
+                
+                # --- FIX START: Handle Control Buttons First ---
                 if name == "execute":
                     if self.planned_actions:
                         self.game.run_turn(self.planned_actions)
                         self.planned_actions = []
+                    return
+                
                 elif name == "clear":
                     self.planned_actions = []
-                elif len(self.planned_actions) < 4:
-                    self.planned_actions.append(btn["action"])
+                    return
+                # --- FIX END ---
+
+                # 3. Handle Action Buttons (Modal Triggers or Standard)
+                # Only try to access "action" if it exists
+                if "action" in btn:
+                    action_key = btn["action"][0]
+
+                    # Logic to open Modals for Flights
+                    if action_key == "direct_flight":
+                        valid_cities = self.game.get_valid_direct_flights(self.game.current_player_index)
+                        if not valid_cities:
+                            self.game.log_msg("No tienes cartas para Vuelo Directo.")
+                            return
+                            
+                        self.active_modal = CitySelectionModal(
+                            "Select Destination (Direct Flight)",
+                            valid_cities,
+                            self.game,
+                            callback_confirm=lambda city: self._on_modal_confirm("direct_flight", city),
+                            callback_cancel=self._on_modal_cancel
+                        )
+                        return
+
+                    elif action_key == "charter_flight":
+                        valid_cities = self.game.get_valid_charter_flights(self.game.current_player_index)
+                        if not valid_cities:
+                            self.game.log_msg("Necesitas la carta de tu ciudad para Vuelo Charter.")
+                            return
+
+                        self.active_modal = CitySelectionModal(
+                            "Select Destination (Charter Flight)",
+                            valid_cities,
+                            self.game,
+                            callback_confirm=lambda city: self._on_modal_confirm("charter_flight", city),
+                            callback_cancel=self._on_modal_cancel
+                        )
+                        return
+
+                    # Standard buttons (Cure, Build, etc.)
+                    elif len(self.planned_actions) < 4:
+                        self.planned_actions.append(btn["action"])
                 return
 
-        # Comprobar si se ha pulsado una ciudad
-        for city_name, city_pos in self.city_coords.items():
-            if pygame.Rect(city_pos[0]-10, city_pos[1]-10, 20, 20).collidepoint(pos):
-                if len(self.planned_actions) < 4:
-                    # Por simplicidad, un clic en ciudad siempre es un 'move'.
-                    self.planned_actions.append(("move", city_name))
-                return
+    def _on_modal_confirm(self, action_type, city_name):
+        # Add the specific flight action to the planned queue
+        if len(self.planned_actions) < 4:
+            self.planned_actions.append((action_type, city_name))
+            # Auto-execute for immediate feedback (optional, based on previous advice)
+            # self.game.run_turn(self.planned_actions) 
+            # self.planned_actions = []
+        self.active_modal = None
+
+    def _on_modal_cancel(self):
+        self.active_modal = None
 
     def draw(self):
         """Dibuja todos los elementos en la pantalla."""
@@ -684,14 +980,25 @@ class PandemicGUI:
         
         # Dibujar UI
         self.draw_ui_panels()
+        self.draw_buttons()
         self.draw_player_hand()
         self.draw_planned_actions()
-        self.draw_buttons()
         self.draw_game_state()
         self.draw_log()
 
         if self.game.game_over:
             self.draw_game_over()
+        
+        # NEW: Draw Modal on top
+        if self.active_modal:
+            # Dim the background
+            dim_surf = pygame.Surface(self.screen_size)
+            dim_surf.set_alpha(150)
+            dim_surf.fill((0, 0, 0))
+            self.screen.blit(dim_surf, (0, 0))
+            
+            # Draw the modal content
+            self.active_modal.draw(self.screen, (self.screen_size[0]//2, self.screen_size[1]//2))
 
     def draw_connections(self):
         for city_name, city_pos in self.city_coords.items():
@@ -829,7 +1136,7 @@ def main():
     # 1. Inicializar el núcleo del juego
     game = Game(seed=42)
     game.add_player("Jugador 1")
-    #game.add_player("Jugador 2")  # Descomenta para añadir más jugadores
+    game.add_player("Jugador 2")  # Descomenta para añadir más jugadores
     game.research_stations.append("Atlanta")  # Estación inicial
 
     # 2. Inicializar y correr la GUI
