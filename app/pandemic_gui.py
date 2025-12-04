@@ -348,7 +348,9 @@ class PandemicGUI:
         if action_key == "share":
              self.active_modal = ShareKnowledgeModal(self.game, 
                 lambda atype, msg: self._on_modal_share_confirm(msg), 
-                self._on_modal_cancel)
+                self._on_modal_cancel,
+                current_location=sim_loc,
+                current_hand=sim_hand)
              return
 
         if action_key == "move":

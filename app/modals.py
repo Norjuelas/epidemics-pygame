@@ -302,7 +302,7 @@ class AirliftModal:
         screen.blit(surf, (ox, oy))
 
 class ShareKnowledgeModal:
-    def __init__(self, game_ref, callback_confirm, callback_cancel):
+    def __init__(self, game_ref, callback_confirm, callback_cancel, current_location=None, current_hand=None):
         self.game = game_ref
         self.on_confirm = callback_confirm
         self.on_cancel = callback_cancel
@@ -312,7 +312,9 @@ class ShareKnowledgeModal:
         self.border_color = (100, 100, 100)
         
         self.current_player = self.game.players[self.game.current_player_index]
-        self.location = self.current_player.location
+        # Usar la ubicación y mano virtual si se proporcionan (acciones planificadas)
+        self.location = current_location if current_location else self.current_player.location
+        self.player_hand = current_hand if current_hand is not None else self.current_player.hand
         
         self.available_players = [
             p for p in self.game.players 
@@ -355,13 +357,15 @@ class ShareKnowledgeModal:
             
             if self.selected_target_player:
                 base_y = 150
-                for i, card in enumerate(self.current_player.hand):
+                # Usar self.player_hand (mano virtual)
+                for i, card in enumerate(self.player_hand):
                     r = pygame.Rect(50 + i * 110, base_y + 30, 100, 40)
                     if r.collidepoint(rel_x, rel_y):
                          if card.lower() == self.location.lower(): 
                              self.selected_card = (card, self.current_player)
                 
                 base_y = 300
+                # Mano del otro jugador (asumimos que no cambia en planificación)
                 for i, card in enumerate(self.selected_target_player.hand):
                     r = pygame.Rect(50 + i * 110, base_y + 30, 100, 40)
                     if r.collidepoint(rel_x, rel_y):
@@ -387,7 +391,7 @@ class ShareKnowledgeModal:
         modal_surface.blit(x_char, (self.close_rect.centerx - x_char.get_width()//2, self.close_rect.centery - x_char.get_height()//2))
         
         if not self.available_players:
-            msg = font_text.render("No hay otros jugadores en esta ciudad.", True, (200, 200, 200))
+            msg = font_text.render("No hay otros jugadores en esta ciudad (planificada).", True, (200, 200, 200))
             modal_surface.blit(msg, (50, 100))
             screen.blit(modal_surface, (modal_x, modal_y))
             return
@@ -407,12 +411,12 @@ class ShareKnowledgeModal:
             start_x += 160
             
         if self.selected_target_player:
-            # Current Player Hand
+            # Current Player Hand (Virtual)
             y_base = 150
             lbl = font_text.render(f"Tu Mano (Dar carta '{self.location}'):", True, (200, 200, 200))
             modal_surface.blit(lbl, (50, y_base))
             
-            for i, card in enumerate(self.current_player.hand):
+            for i, card in enumerate(self.player_hand):
                 r = pygame.Rect(50 + i * 110, y_base + 30, 100, 40)
                 is_valid = (card.lower() == self.location.lower())
                 is_sel = (self.selected_card == (card, self.current_player))
